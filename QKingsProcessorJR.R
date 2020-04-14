@@ -1,5 +1,5 @@
 ####QKINGS ####
-
+library(httr)
 #clear out old stuff
 rm(list=ls())
 #setpath
@@ -9,8 +9,8 @@ app_info<-jsonlite::read_json("app_info.json")
 app_name <- app_info$app_name
 app_client_id  <- app_info$app_client_id
 app_secret <- app_info$app_secret
-
-
+#create list to hold all seg efforts data
+effort.dat<-list()
 #get old scores from file
 Q.df<-read.csv("Qdata.csv",stringsAsFactors = F)
 
@@ -20,16 +20,19 @@ ath.list<-list()
 #read in the athlete data file
 ath<-readLines(con<-file("~/Documents/RaceStuff/QKings/AthleteJsons.txt"))
 close.connection(con)
-
+k=1
 for(j in 1:length(ath)){
 #grab athlete
 ans<-jsonlite::parse_json(ath[j])
 #renew token
-tokcall<-paste0("curl -X POST https://www.strava.com/api/v3/oauth/token"," -d client_id=",app_client_id,
-                " -d client_secret=",app_secret," -d grant_type=refresh_token -d refresh_token=",ans$refresh_token," -o temp.json")
-system(tokcall,ignore.stdout = T)
+bdy<-list(client_id=app_client_id,
+          client_secret=app_secret,
+          grant_type="refresh_token",
+          refresh_token=ans$refresh_token)
+tokdat<-POST(url="https://www.strava.com/api/v3/oauth/token",body=bdy)
+tmp<-content(tokdat,"parsed")
+
 #update athlete file
-tmp<-jsonlite::read_json("~/Documents/RaceStuff/QKings/temp.json")
 ans$expires_at<-tmp$expires_at
 ans$expires_in<-tmp$expires_in
 ans$refresh_token<-tmp$refresh_token
@@ -40,13 +43,18 @@ ath[j]<-jsonlite::toJSON(ans,auto_unbox=T)
 ath.list[[j]]<-ans
 
 #pull segment data
-seg<-c(23304682,23304743,23253789,23276213)
+ seg<-c(23304682,23304743,23253789,23276213)
+ qry<-list(page=1, per_page=200)
 
   for(i in 1:length(seg)){
-    datfile=paste0("Data/",unlist(ans$athlete$username),"_",seg[i],".json")
-    getcall<-paste0('curl -X GET https://www.strava.com/api/v3/segments/',seg[i],'/all_efforts -d page=1 -d per_page=200 -H "Authorization: Bearer ', ans$access_token,'" -o ',datfile)
-    system(getcall,ignore.stderr = T,wait = T)
-    Sys.sleep(.1)
+    
+    hdr<-paste0("Bearer ", ans$access_token)
+    pst.url<-paste0("https://www.strava.com/api/v3/segments/",seg[i],"/all_efforts")
+    rdata<-GET(url =pst.url,query=qry,
+               add_headers(Authorization= hdr))
+    effort.dat[[k]]<-content(rdata,"parsed")
+    k=k+1
+    #Sys.sleep(.1)
  }
 }
 
@@ -70,18 +78,17 @@ if(length(ids[!ids%in%Q.df$Id])>0){
 
 #compile data
 #get activity files
-act.files<-dir("Data")
 dat.list<-list()
 #set current date range
-start.date<-as.Date("2020-04-08")
-end.date<-as.Date("2020-04-12")
+start.date<-as.Date("2020-04-13")
+end.date<-as.Date("2020-04-20")
 
-for(i in 1:length(act.files)){
-dat<-jsonlite::read_json(paste0("~/Documents/RaceStuff/QKings/Data/",act.files[i]))
-if(length(dat)!=0){
-len<-length(dat);len
-dts<-as.Date(sapply(dat,"[[","start_date"))
-pick<-which(dts>=start.date&dts<=end.date)
+for(i in 1:length(effort.dat)){
+   dat<-effort.dat[[i]]
+   if(length(dat)!=0){
+   len<-length(dat);len
+   dts<-as.Date(sapply(dat,"[[","start_date"))
+   pick<-which(dts>=start.date&dts<=end.date)
 if(length(pick)>0)dat.list[[i]]<-data.frame(id=as.character(dat[[1]]$athlete$id),segment=dat[[1]]$name,count=length(pick),min.time=min(sapply(dat,"[[","moving_time")[pick]))
   }
 }
@@ -112,7 +119,7 @@ Q.current<-data.frame(Id=names(Q),Q=Q)
 colnames(Q.current)[2]<-paste0("Q_","current")
 
 #on Sunday night change this to F to add column instead of overwrite it
-replace.current<-F
+replace.current<-T
 
 if(replace.current){
   Q.df<-Q.df[,-(dim(Q.df)[2])]
@@ -134,7 +141,7 @@ Q.df<-Q.df[,-1]
 Q.now<-Q.df[,dim(Q.df)[2]]
 Q.tot<-apply(Q.df,1,sum)
 Q.lastweek<-Q.df[,(dim(Q.df)[2]-1)]
-
+names(Q.now)<-names(Q.tot)
 #fill in any segment not run at all
 seg.names<-c("Girard Park stroller meetup route","QK - Freetown Tour", "QK - Reds HorseFarm Loop","QK - Moore Field Perimeter")
 seg.names%in%colnames(df.count)
@@ -149,11 +156,11 @@ if(!all(seg.names%in%colnames(df.count))){
     df.time<-data.frame(df.time,mt.time)
 }
 #put segment in correct order
-df.count<-df.count[,c(2,3,1,4)]
-df.time<-df.time[,c(2,3,1,4)]
+df.count<-df.count[,c("QK - Freetown Tour", "QK - Reds HorseFarm Loop","QK - Moore Field Perimeter","Girard Park stroller meetup route")]
+df.time<-df.time[,c("QK - Freetown Tour", "QK - Reds HorseFarm Loop","QK - Moore Field Perimeter","Girard Park stroller meetup route")]
 #get order of athlist
 
-ord<-order(Q.tot,decreasing = T)
+ord<-order(Q.now,decreasing = T)
 
 ####make webpage####
 #load silly stuff#
@@ -203,8 +210,8 @@ for(i in 1:length(ord)){
   cat("<td>",i,"</td>")
   #add anchor with username here
   cat("<td><a href='#",paste(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$username)),"'>",sep='')
-  cat("<img src='",ifelse(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile_medium)=="avatar/athlete/medium.png",
-                          "https://www.sciencekids.co.nz/images/pictures/animals/lemur.jpg",unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile_medium)),"' height='120' width='120'>")
+  cat("<img src='",ifelse(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile)=="avatar/athlete/large.png",
+                          "https://www.sciencekids.co.nz/images/pictures/animals/lemur.jpg",unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile)),"' height='120' width='120'>")
   cat("</td></a>")
   cat("<td>",paste(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$firstname),
                    unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$lastname),sep = "<br>"),"</td>")
@@ -233,7 +240,8 @@ for(i in 1:length(ord)){
     cat("<tr>", sep = "\n")
     cat("<td>",k,"</td>")
     cat("<td><a href='#",paste(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$username)),"'>",sep='')
-    cat("<img src='",ifelse(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile_medium)=="avatar/athlete/medium.png","https://www.sciencekids.co.nz/images/pictures/animals/lemur.jpg",unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile_medium)),"' height='120' width='120'>")
+    cat("<img src='",ifelse(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile)=="avatar/athlete/large.png","https://www.sciencekids.co.nz/images/pictures/animals/lemur.jpg",
+                            unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile)),"' height='120' width='120'>")
     cat("</td></a>")
     cat("<td>",paste(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$firstname),
                      unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$lastname),sep = "<br>"),"</td>")
@@ -263,8 +271,8 @@ for(i in 1:length(ord)){
     cat("<tr>", sep = "\n")
     cat("<td>",k,"</td>")
     cat("<td><a href='#",paste(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$username)),"'>",sep='')
-    cat("<img src='",ifelse(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile_medium)=="avatar/athlete/medium.png",
-                            "https://www.sciencekids.co.nz/images/pictures/animals/lemur.jpg",unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile_medium)),"' height='120' width='120'>")
+    cat("<img src='",ifelse(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile)=="avatar/athlete/large.png",
+                            "https://www.sciencekids.co.nz/images/pictures/animals/lemur.jpg",unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$profile)),"' height='120' width='120'>")
     cat("</td></a>")
     cat("<td>",paste(unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$firstname),
                      unlist(ath.list[[which(ids==names(Q.tot)[ord[i]])]]$athlete$lastname),sep = "<br>"),"</td>")
@@ -307,6 +315,9 @@ for(i in 1:length(ord)){
 }
 cat("</body></html>")
 sink() 
+
+
+
 #update github repository so google sites can pull it
 system("git add results.html")
 system(paste0("git commit -m 'results update ",Sys.time(),"'"))
